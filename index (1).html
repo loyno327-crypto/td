@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Simple TD v2 — учебная игра</title>
+<!-- Telegram Web App SDK. Если страница открыта не внутри Telegram (обычный браузер),
+     скрипт просто не создаст объект window.Telegram — игра при этом всё равно работает,
+     весь код ниже это учитывает через проверку `if (tg) {...}`. -->
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  body {
+    margin: 0;
+    /* Цвет фона можно переопределить темой Telegram — см. JS-блок Telegram-интеграции ниже */
+    background: var(--tg-bg, #1b1f27);
+    color: var(--tg-text, #eee);
+    font-family: 'Segoe UI', Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom)); /* чтобы контролы не залезали под системные жесты телефона */
+    box-sizing: border-box;
+    /* убирает "резиновый" скролл/зум на мобильных — Telegram Mini App не терпит системного скролла страницы */
+    overscroll-behavior: none;
+  }
+  * { box-sizing: border-box; }
+  h1 { margin: 0 0 4px 0; font-size: 18px; text-align: center; }
+  p.hint { margin: 0 0 10px 0; color: #9aa4b2; font-size: 12px; text-align: center; max-width: 640px; }
+
+  /* По умолчанию (широкий экран — обычный браузер) — канвас и панель рядом.
+     На узких экранах (телефон, Telegram Mini App) переключаемся в колонку — см. media query ниже. */
+  #layout { display: flex; gap: 14px; align-items: flex-start; width: 100%; max-width: 920px; justify-content: center; }
+  #canvasWrap { position: relative; width: 100%; max-width: 640px; touch-action: none; }
+  canvas {
+    background: #2f7a3c;
+    border: 2px solid #444;
+    border-radius: 6px;
+    cursor: crosshair;
+    display: block;
+    width: 100%;   /* канвас растягивается по ширине контейнера... */
+    height: auto;  /* ...а высота подстраивается пропорционально — внутреннее разрешение (640x480) не меняется */
+    touch-action: none;
+  }
+
+  @media (max-width: 700px) {
+    #layout { flex-direction: column; align-items: center; }
+    #panel { width: 100%; max-width: 640px; }
+  }
+
+  #gameOverMsg {
+    position: absolute;
+    top: 40%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    display: none;
+    text-shadow: 0 0 8px black;
+  }
+  #gameOverMsg .title { font-size: 30px; font-weight: bold; }
+  #gameOverMsg button {
+    margin-top: 10px;
+    padding: 8px 18px;
+    font-size: 14px;
+    background: #3d7dff;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  /* ---------- Правая панель ---------- */
+  #panel {
+    width: 250px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .box {
+    background: #262b36;
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .box h3 { margin: 0 0 8px 0; font-size: 13px; color: #9aa4b2; text-transform: uppercase; letter-spacing: .05em; }
+  .stat-row { display: flex; justify-content: space-between; font-size: 15px; margin-bottom: 4px; }
+  .stat-row span:last-child { font-weight: bold; }
+
+  .tower-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px;
+    margin-bottom: 6px;
+    background: #313847;
+    border: 2px solid transparent;
+    border-radius: 6px;
+    color: #eee;
+    cursor: pointer;
+    font-size: 13px;
+    text-align: left;
+  }
+  .tower-btn:hover { background: #3a4356; }
+  .tower-btn.active { border-color: #3d7dff; background: #303f5e; }
+  .tower-btn .swatch { width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0; }
+  .tower-btn .desc { color: #9aa4b2; font-size: 11px; }
+  .tower-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  #controlsRow { display: flex; gap: 8px; }
+  #controlsRow button, #startWaveBtn {
+    flex: 1;
+    padding: 8px;
+    font-size: 13px;
+    background: #3d7dff;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  #controlsRow button.toggled { background: #2ecc71; }
+  #startWaveBtn:disabled, #controlsRow button:disabled { background: #555; cursor: default; }
+
+  #selectedTowerBox { display: none; }
+  #selectedTowerBox button {
+    padding: 6px 10px;
+    font-size: 12px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    margin-right: 6px;
+    margin-top: 4px;
+  }
+  #upgradeBtn { background: #2ecc71; color: #063; }
+  #sellBtn { background: #e74c3c; color: #400; }
+  #upgradeBtn:disabled { background: #555; color: #999; cursor: default; }
+
+  #nextWavePreview { font-size: 12px; color: #cdd3dc; line-height: 1.6; }
+  #nextWavePreview .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }
+</style>
+</head>
+<body>
+
+<h1>Simple TD v2 — учебная Tower Defense</h1>
+<p class="hint">
+  Выбери тип башни слева, кликни по зелёному полю чтобы поставить. Клик по уже стоящей башне — выделить её
+  (можно улучшить или продать). «Начать волну» запускает врагов. Дойди до 15 волны, не потеряв все жизни.
+</p>
+
+<div id="layout">
+  <div id="canvasWrap">
+    <canvas id="game" width="640" height="480"></canvas>
+    <div id="gameOverMsg">
+      <div class="title" id="gameOverTitle">ИГРА ОКОНЧЕНА</div>
+      <div id="gameOverSubtitle"></div>
+      <button id="restartBtn">Начать заново</button>
+    </div>
+  </div>
+
+  <div id="panel">
+    <div class="box">
+      <h3>Статистика</h3>
+      <div class="stat-row"><span>💰 Золото</span><span id="goldVal">80</span></div>
+      <div class="stat-row"><span>❤️ Жизни</span><span id="livesVal">10</span></div>
+      <div class="stat-row"><span>🌊 Волна</span><span id="waveVal">0 / 15</span></div>
+    </div>
+
+    <div class="box">
+      <h3>Башни</h3>
+      <button class="tower-btn" data-type="basic">
+        <span class="swatch" style="background:#3d7dff"></span>
+        <span>
+          <div>Базовая — 20💰</div>
+          <div class="desc">Средний урон, средняя скорость</div>
+        </span>
+      </button>
+      <button class="tower-btn" data-type="sniper">
+        <span class="swatch" style="background:#2ecc71"></span>
+        <span>
+          <div>Снайпер — 45💰</div>
+          <div class="desc">Большая дальность, редко, но больно</div>
+        </span>
+      </button>
+      <button class="tower-btn" data-type="cannon">
+        <span class="swatch" style="background:#f39c12"></span>
+        <span>
+          <div>Пушка — 60💰</div>
+          <div class="desc">Урон по области вокруг цели</div>
+        </span>
+      </button>
+    </div>
+
+    <div class="box" id="selectedTowerBox">
+      <h3>Выбранная башня</h3>
+      <div class="stat-row"><span>Тип</span><span id="selType">-</span></div>
+      <div class="stat-row"><span>Уровень</span><span id="selLevel">-</span></div>
+      <div class="stat-row"><span>Урон</span><span id="selDamage">-</span></div>
+      <div>
+        <button id="upgradeBtn">Улучшить</button>
+        <button id="sellBtn">Продать</button>
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>Следующая волна</h3>
+      <div id="nextWavePreview">—</div>
+    </div>
+
+    <div id="controlsRow">
+      <button id="pauseBtn">⏸ Пауза</button>
+      <button id="speedBtn">▶▶ x2</button>
+    </div>
+    <button id="startWaveBtn">Начать волну</button>
+  </div>
+</div>
+
+<script>
+/* ==========================================================================
+   SIMPLE TD v2 — учебная игра, чистый JS + Canvas, без движка.
+
+   Что добавлено по сравнению с версией 1 (для играбельности):
+   - 3 типа башен с разными характеристиками (в т.ч. урон по области)
+   - 4 типа врагов (обычный/быстрый/танк/босс), волны стали разнообразнее
+   - Апгрейд и продажа башен
+   - Пауза и ускорение x2
+   - Предпросмотр состава следующей волны
+   - Условие победы (15 волн) и более понятный game over с рестартом
+   ========================================================================== */
+
+// ---------- 1. Константы поля ----------
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const CELL = 40;
+const COLS = canvas.width / CELL;
+const ROWS = canvas.height / CELL;
+const WIN_WAVE = 15;
+const SPAWN_INTERVAL = 0.7; // сек между спавнами внутри волны
+
+// ---------- 2. Типы башен ----------
+// Вынесены в отдельный объект-конфиг — типичный паттерн для баланса игры:
+// один источник правды для всех характеристик, легко подкручивать цифры.
+const TOWER_TYPES = {
+  basic:  { cost: 20, damage: 20, range: 100, fireRate: 0.6, projSpeed: 260, splash: 0,  color: '#3d7dff' },
+  sniper: { cost: 45, damage: 65, range: 190, fireRate: 1.4, projSpeed: 420, splash: 0,  color: '#2ecc71' },
+  cannon: { cost: 60, damage: 25, range: 90,  fireRate: 1.0, projSpeed: 200, splash: 45, color: '#f39c12' },
+};
+
+// ---------- 3. Типы врагов ----------
+const ENEMY_TYPES = {
+  normal: { hpBase: 40,  hpPerWave: 15, speed: 60,  radius: 10, reward: 5,  lifeCost: 1, color: '#e74c3c', shape: 'circle' },
+  fast:   { hpBase: 22,  hpPerWave: 7,  speed: 115, radius: 8,  reward: 4,  lifeCost: 1, color: '#f1c40f', shape: 'triangle' },
+  tank:   { hpBase: 100, hpPerWave: 32, speed: 34,  radius: 13, reward: 10, lifeCost: 2, color: '#9b59b6', shape: 'square' },
+  boss:   { hpBase: 450, hpPerWave: 70, speed: 42,  radius: 20, reward: 55, lifeCost: 3, color: '#2c3e50', shape: 'circle' },
+};
+
+// ---------- 4. Состояние игры ----------
+const state = {
+  gold: 80,
+  lives: 10,
+  wave: 0,
+  waveInProgress: false,
+  gameOver: false,
+  won: false,
+  paused: false,
+  speedMult: 1,
+};
+
+let selectedBuildType = null; // какой тип башни игрок собирается ставить
+let selectedTower = null;     // на какую построенную башню кликнули (для апгрейда/продажи)
+
+// ---------- 5. Путь врагов (fixed path), винтом через поле ----------
+const pathCells = [
+  {x:0, y:1}, {x:2, y:1}, {x:2, y:5}, {x:6, y:5}, {x:6, y:1},
+  {x:10,y:1}, {x:10,y:9}, {x:13,y:9}, {x:13,y:3}, {x:15,y:3}
+];
+const path = pathCells.map(c => ({ x: c.x*CELL + CELL/2, y: c.y*CELL + CELL/2 }));
+
+const roadCellSet = new Set();
+for (let i = 0; i < pathCells.length - 1; i++) {
+  const a = pathCells[i], b = pathCells[i+1];
+  const dx = Math.sign(b.x - a.x), dy = Math.sign(b.y - a.y);
+  let x = a.x, y = a.y;
+  roadCellSet.add(`${x},${y}`);
+  while (x !== b.x || y !== b.y) { x += dx; y += dy; roadCellSet.add(`${x},${y}`); }
+}
+
+// ---------- 6. Сущности ----------
+let enemies = [];
+let towers = [];
+let projectiles = [];
+let waveQueue = [];   // очередь типов врагов, которых ещё нужно заспавнить в этой волне
+let spawnTimer = 0;
+
+// ---------- 7. Звук (минимальный, через WebAudio, без файлов) ----------
+let audioCtx = null;
+function beep(freq, duration, type='sine', volume=0.05) {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    gain.gain.value = volume;
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start();
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    osc.stop(audioCtx.currentTime + duration);
+  } catch(e) { /* аудио не критично, просто молча игнорируем */ }
+}
+
+// ---------- 7.5 Telegram Mini App интеграция ----------
+// tg будет undefined, если страница открыта в обычном браузере — весь код ниже
+// на это рассчитан, так что игра одинаково работает и в браузере, и в Telegram.
+const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+
+if (tg) {
+  tg.ready();    // сообщаем Telegram, что страница готова к показу
+  tg.expand();   // разворачиваем Mini App на весь экран (а не маленькую шторку)
+
+  // Подхватываем цветовую тему пользователя (тёмная/светлая) вместо своей жёстко
+  // заданной палитры — так игра выглядит "родной" внутри клиента Telegram.
+  if (tg.themeParams.bg_color) {
+    document.documentElement.style.setProperty('--tg-bg', tg.themeParams.bg_color);
+  }
+  if (tg.themeParams.text_color) {
+    document.documentElement.style.setProperty('--tg-text', tg.themeParams.text_color);
+  }
+  try { tg.setHeaderColor(tg.themeParams.bg_color || '#1b1f27'); } catch(e) {}
+
+  // Нативная синяя кнопка Telegram внизу экрана — дублирует "Начать волну",
+  // но выглядит нативно и не занимает место в самом интерфейсе игры.
+  tg.MainButton.setText('Начать волну');
+  tg.MainButton.show();
+  tg.MainButton.onClick(() => startWave());
+}
+
+// Единая точка вызова вибро-отклика. Вне Telegram просто ничего не делает.
+function haptic(kind) {
+  if (!tg || !tg.HapticFeedback) return;
+  if (kind === 'light' || kind === 'medium' || kind === 'heavy') {
+    tg.HapticFeedback.impactOccurred(kind);
+  } else if (kind === 'success' || kind === 'error' || kind === 'warning') {
+    tg.HapticFeedback.notificationOccurred(kind);
+  }
+}
+
+// ---------- 8. Генерация состава волны ----------
+// Возвращает массив строк-типов в порядке спавна. Каждые 5 волн — усиленная
+// волна с боссом. Чем дальше волна, тем больше быстрых и танков.
+function getWaveComposition(waveNum) {
+  const normalCount = 4 + waveNum;
+  const fastCount = Math.floor(waveNum / 2);
+  const tankCount = Math.floor(waveNum / 3);
+
+  const pools = { normal: normalCount, fast: fastCount, tank: tankCount };
+  const comp = [];
+  // интерлив: чередуем типы, чтобы волна не была "сначала все танки, потом все быстрые"
+  let remaining = true;
+  while (remaining) {
+    remaining = false;
+    for (const type in pools) {
+      if (pools[type] > 0) {
+        comp.push(type);
+        pools[type]--;
+        remaining = true;
+      }
+    }
+  }
+  if (waveNum % 5 === 0) comp.push('boss');
+  return comp;
+}
+
+function spawnEnemy(type, waveNum) {
+  const def = ENEMY_TYPES[type];
+  enemies.push({
+    type,
+    x: path[0].x, y: path[0].y,
+    hp: def.hpBase + def.hpPerWave * waveNum,
+    maxHp: def.hpBase + def.hpPerWave * waveNum,
+    speed: def.speed,
+    pathIndex: 1,
+  });
+}
+
+// ---------- 9. Игровой цикл ----------
+let lastTime = performance.now();
+function gameLoop(now) {
+  let dt = (now - lastTime) / 1000;
+  dt = Math.min(dt, 0.05); // защита от скачка dt при переключении вкладки
+  lastTime = now;
+
+  if (!state.gameOver && !state.paused) {
+    update(dt * state.speedMult);
+  }
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+function update(dt) {
+  updateSpawning(dt);
+  updateEnemies(dt);
+  updateTowers(dt);
+  updateProjectiles(dt);
+  checkWaveEnd();
+}
+
+function updateSpawning(dt) {
+  if (waveQueue.length === 0) return;
+  spawnTimer -= dt;
+  if (spawnTimer <= 0) {
+    spawnEnemy(waveQueue.shift(), state.wave);
+    spawnTimer = SPAWN_INTERVAL;
+  }
+}
+
+function updateEnemies(dt) {
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i];
+    const target = path[e.pathIndex];
+
+    if (!target) {
+      state.lives -= ENEMY_TYPES[e.type].lifeCost;
+      enemies.splice(i, 1);
+      beep(120, 0.2, 'sawtooth', 0.06);
+      haptic('warning');
+      if (state.lives <= 0) { state.lives = 0; triggerEnd(false); }
+      continue;
+    }
+
+    const dx = target.x - e.x, dy = target.y - e.y;
+    const dist = Math.hypot(dx, dy);
+    const step = e.speed * dt;
+
+    if (dist <= step) { e.x = target.x; e.y = target.y; e.pathIndex++; }
+    else { e.x += (dx/dist)*step; e.y += (dy/dist)*step; }
+    e.angle = Math.atan2(dy, dx); // направление взгляда — пригодится для отрисовки "глаз"
+
+    if (e.hp <= 0) {
+      state.gold += ENEMY_TYPES[e.type].reward;
+      enemies.splice(i, 1);
+    }
+  }
+}
+
+function updateTowers(dt) {
+  for (const t of towers) {
+    t.cooldown -= dt;
+    if (t.muzzleFlash > 0) t.muzzleFlash = Math.max(0, t.muzzleFlash - dt);
+    if (t.cooldown > 0) continue;
+
+    let target = null, bestDist = t.range;
+    for (const e of enemies) {
+      const d = Math.hypot(e.x - t.x, e.y - t.y);
+      if (d <= bestDist) { bestDist = d; target = e; }
+    }
+
+    if (target) {
+      t.angle = Math.atan2(target.y - t.y, target.x - t.x); // поворачиваем "ствол" к цели
+      t.muzzleFlash = 0.08; // короткая вспышка при выстреле, гасится в drawTowers
+      projectiles.push({ x: t.x, y: t.y, target, speed: t.projSpeed, damage: t.damage, splash: t.splash, color: t.color });
+      t.cooldown = t.fireRate;
+      beep(t.splash > 0 ? 200 : 500, 0.05, 'square', 0.03);
+    }
+  }
+}
+
+function updateProjectiles(dt) {
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const p = projectiles[i];
+    if (!enemies.includes(p.target)) { projectiles.splice(i, 1); continue; }
+
+    const dx = p.target.x - p.x, dy = p.target.y - p.y;
+    const dist = Math.hypot(dx, dy);
+    const step = p.speed * dt;
+
+    if (dist <= step) {
+      if (p.splash > 0) {
+        // урон по области: задеваем всех врагов в радиусе splash от точки попадания
+        for (const e of enemies) {
+          if (Math.hypot(e.x - p.target.x, e.y - p.target.y) <= p.splash) e.hp -= p.damage;
+        }
+      } else {
+        p.target.hp -= p.damage;
+      }
+      projectiles.splice(i, 1);
+    } else {
+      p.x += (dx/dist)*step; p.y += (dy/dist)*step;
+    }
+  }
+}
+
+function checkWaveEnd() {
+  if (state.waveInProgress && waveQueue.length === 0 && enemies.length === 0) {
+    state.waveInProgress = false;
+    const bonus = 10 + state.wave * 2;
+    state.gold += bonus;
+    document.getElementById('startWaveBtn').disabled = false;
+    if (tg) tg.MainButton.enable();
+    beep(700, 0.15, 'sine', 0.05);
+    haptic('success');
+    if (state.wave >= WIN_WAVE) triggerEnd(true);
+  }
+}
+
+function startWave() {
+  if (state.waveInProgress || state.gameOver) return;
+  state.wave++;
+  waveQueue = getWaveComposition(state.wave);
+  spawnTimer = 0;
+  state.waveInProgress = true;
+  document.getElementById('startWaveBtn').disabled = true;
+  if (tg) tg.MainButton.disable();
+}
+
+function triggerEnd(won) {
+  state.gameOver = true;
+  state.won = won;
+  const box = document.getElementById('gameOverMsg');
+  const title = document.getElementById('gameOverTitle');
+  const sub = document.getElementById('gameOverSubtitle');
+  if (won) {
+    title.textContent = 'ПОБЕДА!';
+    title.style.color = '#2ecc71';
+    sub.textContent = `Все ${WIN_WAVE} волн отбиты.`;
+  } else {
+    title.textContent = 'ИГРА ОКОНЧЕНА';
+    title.style.color = '#ff5555';
+    sub.textContent = `Продержался до волны ${state.wave}.`;
+  }
+  box.style.display = 'block';
+  haptic(won ? 'success' : 'error');
+  if (tg) tg.MainButton.hide(); // на экране game over нативная кнопка не нужна — там своя "Начать заново"
+}
+
+// ---------- 10. Ввод: постройка, выбор, апгрейд, продажа ----------
+document.querySelectorAll('.tower-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    selectedBuildType = (selectedBuildType === btn.dataset.type) ? null : btn.dataset.type;
+    selectedTower = null;
+    refreshBuildButtons();
+    refreshSelectedTowerBox();
+  });
+});
+
+// Канвас теперь может отображаться шире/уже своего внутреннего разрешения (640x480) —
+// растягивается CSS-ом под ширину экрана. Поэтому координаты клика/тапа нужно
+// пересчитывать пропорционально, иначе на телефоне башни будут ставиться мимо места тапа.
+function getCanvasPoint(evt) {
+  const rect = canvas.getBoundingClientRect();
+  const touch = (evt.changedTouches && evt.changedTouches[0]) || (evt.touches && evt.touches[0]);
+  const clientX = touch ? touch.clientX : evt.clientX;
+  const clientY = touch ? touch.clientY : evt.clientY;
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  return { mx: (clientX - rect.left) * scaleX, my: (clientY - rect.top) * scaleY };
+}
+
+function handleCanvasTap(evt) {
+  if (state.gameOver) return;
+  const { mx, my } = getCanvasPoint(evt);
+  const cellX = Math.floor(mx / CELL), cellY = Math.floor(my / CELL);
+
+  // сначала проверим — не кликнули ли по уже стоящей башне
+  const clickedTower = towers.find(t => t.cellX === cellX && t.cellY === cellY);
+  if (clickedTower) {
+    selectedTower = clickedTower;
+    selectedBuildType = null;
+    refreshBuildButtons();
+    refreshSelectedTowerBox();
+    return;
+  }
+
+  selectedTower = null;
+  refreshSelectedTowerBox();
+
+  if (!selectedBuildType) return;
+  if (roadCellSet.has(`${cellX},${cellY}`)) return;
+
+  const def = TOWER_TYPES[selectedBuildType];
+  if (state.gold < def.cost) return;
+
+  state.gold -= def.cost;
+  towers.push({
+    type: selectedBuildType,
+    cellX, cellY,
+    x: cellX*CELL + CELL/2, y: cellY*CELL + CELL/2,
+    level: 1,
+    cooldown: 0,
+    angle: -Math.PI / 2,   // изначально "смотрит" вверх
+    muzzleFlash: 0,
+    damage: def.damage,
+    range: def.range,
+    fireRate: def.fireRate,
+    projSpeed: def.projSpeed,
+    splash: def.splash,
+    spent: def.cost, // сколько золота вложено всего (для расчёта продажи)
+  });
+  refreshBuildButtons();
+  haptic('light'); // лёгкая вибрация при постройке — работает только внутри Telegram
+}
+
+// В браузере срабатывает 'click', в Telegram Mini App на телефоне тап тоже
+// приходит как 'click' (WebView сам это эмулирует), но touchend добавлен для
+// надёжности и чтобы избежать двойной задержки тапа на некоторых устройствах.
+canvas.addEventListener('click', handleCanvasTap);
+canvas.addEventListener('touchend', (evt) => { evt.preventDefault(); handleCanvasTap(evt); }, { passive: false });
+
+document.getElementById('upgradeBtn').addEventListener('click', () => {
+  if (!selectedTower || selectedTower.level >= 3) return;
+  const base = TOWER_TYPES[selectedTower.type];
+  const cost = Math.round(base.cost * 0.8 * selectedTower.level);
+  if (state.gold < cost) return;
+  state.gold -= cost;
+  selectedTower.spent += cost;
+  selectedTower.level++;
+  selectedTower.damage = Math.round(selectedTower.damage * 1.4);
+  selectedTower.range = Math.round(selectedTower.range * 1.08);
+  selectedTower.fireRate = +(selectedTower.fireRate * 0.9).toFixed(2);
+  refreshSelectedTowerBox();
+  beep(900, 0.15, 'triangle', 0.05);
+});
+
+document.getElementById('sellBtn').addEventListener('click', () => {
+  if (!selectedTower) return;
+  state.gold += Math.round(selectedTower.spent * 0.6);
+  towers = towers.filter(t => t !== selectedTower);
+  selectedTower = null;
+  refreshSelectedTowerBox();
+});
+
+document.getElementById('startWaveBtn').addEventListener('click', startWave);
+
+document.getElementById('pauseBtn').addEventListener('click', (e) => {
+  state.paused = !state.paused;
+  e.target.textContent = state.paused ? '▶ Продолжить' : '⏸ Пауза';
+  e.target.classList.toggle('toggled', state.paused);
+});
+
+document.getElementById('speedBtn').addEventListener('click', (e) => {
+  state.speedMult = state.speedMult === 1 ? 2 : 1;
+  e.target.textContent = state.speedMult === 2 ? '▶ x1' : '▶▶ x2';
+  e.target.classList.toggle('toggled', state.speedMult === 2);
+});
+
+document.getElementById('restartBtn').addEventListener('click', resetGame);
+
+function resetGame() {
+  state.gold = 80; state.lives = 10; state.wave = 0;
+  state.waveInProgress = false; state.gameOver = false; state.won = false;
+  state.paused = false; state.speedMult = 1;
+  enemies = []; towers = []; projectiles = []; waveQueue = [];
+  selectedBuildType = null; selectedTower = null;
+  document.getElementById('startWaveBtn').disabled = false;
+  document.getElementById('gameOverMsg').style.display = 'none';
+  document.getElementById('pauseBtn').textContent = '⏸ Пауза';
+  document.getElementById('speedBtn').textContent = '▶▶ x2';
+  if (tg) { tg.MainButton.show(); tg.MainButton.enable(); }
+  refreshBuildButtons();
+  refreshSelectedTowerBox();
+}
+
+function refreshBuildButtons() {
+  document.querySelectorAll('.tower-btn').forEach(btn => {
+    const type = btn.dataset.type;
+    btn.classList.toggle('active', selectedBuildType === type);
+    btn.disabled = state.gold < TOWER_TYPES[type].cost;
+  });
+}
+
+function refreshSelectedTowerBox() {
+  const box = document.getElementById('selectedTowerBox');
+  if (!selectedTower) { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  document.getElementById('selType').textContent = selectedTower.type;
+  document.getElementById('selLevel').textContent = selectedTower.level + ' / 3';
+  document.getElementById('selDamage').textContent = selectedTower.damage;
+  const upgradeBtn = document.getElementById('upgradeBtn');
+  if (selectedTower.level >= 3) {
+    upgradeBtn.disabled = true;
+    upgradeBtn.textContent = 'Макс. уровень';
+  } else {
+    const cost = Math.round(TOWER_TYPES[selectedTower.type].cost * 0.8 * selectedTower.level);
+    upgradeBtn.disabled = state.gold < cost;
+    upgradeBtn.textContent = `Улучшить (${cost}💰)`;
+  }
+}
+
+// ---------- 11. Отрисовка ----------
+function render() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawGrid();
+  drawPath();
+  drawTowers();
+  drawEnemies();
+  drawProjectiles();
+  updateUI();
+}
+
+function drawGrid() {
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+  for (let x = 0; x <= COLS; x++) { ctx.beginPath(); ctx.moveTo(x*CELL,0); ctx.lineTo(x*CELL,canvas.height); ctx.stroke(); }
+  for (let y = 0; y <= ROWS; y++) { ctx.beginPath(); ctx.moveTo(0,y*CELL); ctx.lineTo(canvas.width,y*CELL); ctx.stroke(); }
+}
+
+function drawPath() {
+  ctx.fillStyle = '#c8a15a';
+  for (const key of roadCellSet) {
+    const [cx, cy] = key.split(',').map(Number);
+    ctx.fillRect(cx*CELL, cy*CELL, CELL, CELL);
+  }
+}
+
+// небольшой хелпер: затемнить/осветлить hex-цвет на заданный процент.
+// Используется, чтобы у градиентов не заводить отдельную палитру вручную.
+function shadeColor(hex, percent) {
+  const num = parseInt(hex.slice(1), 16);
+  let r = (num >> 16) + Math.round(255 * percent);
+  let g = ((num >> 8) & 0xff) + Math.round(255 * percent);
+  let b = (num & 0xff) + Math.round(255 * percent);
+  r = Math.max(0, Math.min(255, r));
+  g = Math.max(0, Math.min(255, g));
+  b = Math.max(0, Math.min(255, b));
+  return `rgb(${r},${g},${b})`;
+}
+
+function drawShadow(x, y, rx, ry) {
+  ctx.fillStyle = 'rgba(0,0,0,0.25)';
+  ctx.beginPath();
+  ctx.ellipse(x, y + ry * 0.6, rx, ry, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawTowers() {
+  for (const t of towers) {
+    const def = TOWER_TYPES[t.type];
+
+    if (t === selectedTower) {
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, t.range, 0, Math.PI*2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.stroke();
+    }
+
+    drawShadow(t.x, t.y, 13, 5);
+
+    // корпус башни — радиальный градиент вместо плоской заливки, даёт объём
+    const grad = ctx.createRadialGradient(t.x - 4, t.y - 4, 2, t.x, t.y, 15);
+    grad.addColorStop(0, shadeColor(def.color, 0.35));
+    grad.addColorStop(1, def.color);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, 14, 0, Math.PI*2);
+    ctx.fill();
+    if (t === selectedTower) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke(); ctx.lineWidth = 1; }
+
+    // "ствол" — повёрнут в сторону последней цели, у пушки толще и короче
+    ctx.save();
+    ctx.translate(t.x, t.y);
+    ctx.rotate(t.angle || 0);
+    ctx.fillStyle = shadeColor(def.color, -0.25);
+    const barrelLen = t.type === 'cannon' ? 14 : 20;
+    const barrelW = t.type === 'cannon' ? 8 : 5;
+    ctx.fillRect(0, -barrelW/2, barrelLen, barrelW);
+    ctx.restore();
+
+    // короткая вспышка на конце ствола в момент выстрела
+    if (t.muzzleFlash > 0) {
+      const bx = t.x + Math.cos(t.angle) * (t.type === 'cannon' ? 16 : 22);
+      const by = t.y + Math.sin(t.angle) * (t.type === 'cannon' ? 16 : 22);
+      ctx.fillStyle = `rgba(255, 230, 120, ${t.muzzleFlash / 0.08})`;
+      ctx.beginPath();
+      ctx.arc(bx, by, 5, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    // точки уровня над башней
+    for (let i = 0; i < t.level; i++) {
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(t.x - 6 + i*6, t.y - 22, 2, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+}
+
+function drawEnemies() {
+  for (const e of enemies) {
+    const def = ENEMY_TYPES[e.type];
+    const angle = e.angle || 0;
+
+    drawShadow(e.x, e.y, def.radius, def.radius * 0.4);
+
+    // у босса лёгкая пульсация размера — придаёт "живости" без спрайтов
+    const pulse = e.type === 'boss' ? 1 + Math.sin(performance.now() / 200) * 0.04 : 1;
+    const r = def.radius * pulse;
+
+    const grad = ctx.createRadialGradient(e.x - r*0.3, e.y - r*0.3, r*0.2, e.x, e.y, r);
+    grad.addColorStop(0, shadeColor(def.color, 0.3));
+    grad.addColorStop(1, def.color);
+    ctx.fillStyle = grad;
+
+    if (def.shape === 'square') {
+      ctx.save();
+      ctx.translate(e.x, e.y);
+      ctx.rotate(angle);
+      ctx.fillRect(-r, -r, r*2, r*2);
+      ctx.restore();
+    } else if (def.shape === 'triangle') {
+      ctx.save();
+      ctx.translate(e.x, e.y);
+      ctx.rotate(angle + Math.PI/2); // угол острия смотрит по ходу движения
+      ctx.beginPath();
+      ctx.moveTo(0, -r);
+      ctx.lineTo(-r, r);
+      ctx.lineTo(r, r);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    } else {
+      ctx.beginPath();
+      ctx.arc(e.x, e.y, r, 0, Math.PI*2);
+      ctx.fill();
+      if (e.type === 'boss') { ctx.strokeStyle = '#e74c3c'; ctx.lineWidth = 3; ctx.stroke(); ctx.lineWidth = 1; }
+    }
+
+    // "глаза" — две точки, смещённые по направлению взгляда, сразу читается как персонаж
+    const eyeOffset = r * 0.45;
+    const ex = e.x + Math.cos(angle) * eyeOffset;
+    const ey = e.y + Math.sin(angle) * eyeOffset;
+    const perpX = Math.cos(angle + Math.PI/2) * r * 0.35;
+    const perpY = Math.sin(angle + Math.PI/2) * r * 0.35;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(ex + perpX, ey + perpY, r*0.22, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(ex - perpX, ey - perpY, r*0.22, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.arc(ex + perpX, ey + perpY, r*0.1, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(ex - perpX, ey - perpY, r*0.1, 0, Math.PI*2); ctx.fill();
+
+    const barW = def.radius * 2.2;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(e.x - barW/2, e.y - r - 10, barW, 4);
+    ctx.fillStyle = '#2ecc71';
+    ctx.fillRect(e.x - barW/2, e.y - r - 10, barW * (e.hp/e.maxHp), 4);
+  }
+}
+
+function drawProjectiles() {
+  for (const p of projectiles) {
+    // короткий "хвост" в сторону, откуда снаряд летит — читается как трасса, а не точка
+    const dx = p.target.x - p.x, dy = p.target.y - p.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const tailLen = p.splash > 0 ? 10 : 14;
+    const tx = p.x - (dx/dist) * tailLen;
+    const ty = p.y - (dy/dist) * tailLen;
+
+    const grad = ctx.createLinearGradient(tx, ty, p.x, p.y);
+    grad.addColorStop(0, 'rgba(255,255,255,0)');
+    grad.addColorStop(1, p.color || '#fff');
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = p.splash > 0 ? 4 : 2;
+    ctx.beginPath();
+    ctx.moveTo(tx, ty);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.splash > 0 ? 4 : 2.5, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+function updateUI() {
+  document.getElementById('goldVal').textContent = state.gold;
+  document.getElementById('livesVal').textContent = state.lives;
+  document.getElementById('waveVal').textContent = `${state.wave} / ${WIN_WAVE}`;
+  refreshBuildButtons();
+  refreshSelectedTowerBox();
+  renderNextWavePreview();
+}
+
+function renderNextWavePreview() {
+  const el = document.getElementById('nextWavePreview');
+  if (state.waveInProgress) { el.textContent = 'Волна в процессе...'; return; }
+  if (state.wave >= WIN_WAVE) { el.textContent = 'Это была последняя волна.'; return; }
+  const comp = getWaveComposition(state.wave + 1);
+  const counts = {};
+  comp.forEach(t => counts[t] = (counts[t]||0) + 1);
+  el.innerHTML = Object.entries(counts).map(([type, count]) =>
+    `<span class="dot" style="background:${ENEMY_TYPES[type].color}"></span>${type} × ${count}`
+  ).join('<br>');
+}
+
+// запуск
+refreshBuildButtons();
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
